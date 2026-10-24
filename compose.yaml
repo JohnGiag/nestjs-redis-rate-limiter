@@ -1,0 +1,52 @@
+# Production shape on one machine: nginx (load balancer) → 3 app replicas → Redis.
+# Run: docker compose up -d --build    Test: npm run test:docker    Stop: docker compose down
+services:
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    # Not published to the host: only the app containers can reach it.
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  app:
+    build: .
+    # Also covers boot races after a Docker restart: the app exits if Redis isn't up yet and is retried.
+    restart: unless-stopped
+    environment:
+      REDIS_URL: redis://redis:6379
+      TRUST_PROXY_HOPS: '1' # exactly one proxy (nginx) in front
+    deploy:
+      replicas: 3
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - '8080:80'
+    environment:
+      # 1 adds an X-Upstream header naming the replica (testing only). Set in .env; off by default.
+      EXPOSE_UPSTREAM: ${EXPOSE_UPSTREAM:-0}
+    volumes:
+      - ./docker/nginx/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+    depends_on:
+      app:
+        condition: service_healthy
+
+  # Load generator, only started by `npm run test:load` (profile "load").
+  k6:
+    image: grafana/k6:1.0.0
+    profiles: [load]
+    environment:
+      RATE: ${RATE:-500}
+      DURATION_S: ${DURATION_S:-180}
+    volumes:
+      - ./test/load:/scripts:ro
+    command: run /scripts/sliding-window.js
+    depends_on:
+      - nginx

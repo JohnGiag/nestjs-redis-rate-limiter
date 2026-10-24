@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Lint, audit, unit and e2e tests
+    runs-on: ubuntu-latest
+    services:
+      # Mapped to localhost, which the e2e suites require (they refuse a non-local Redis).
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 15
+    env:
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      # Shipped dependencies only: dev tools never reach the Docker image.
+      - run: npm audit --omit=dev --audit-level=high
+      - run: npm run build
+      - run: npm test
+      - run: npm run test:e2e
+
+  docker:
+    name: Docker stack, failover and load
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      EXPOSE_UPSTREAM: '1' # the smoke test checks which replica answered
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Start stack (nginx → 3 replicas → Redis)
+        run: docker compose up -d --build --wait
+      - run: npm run test:docker
+      - name: Short load test (30 s at 200 req/s)
+        run: npm run test:load
+        env:
+          DURATION_S: '30'
+          RATE: '200'
+
+      - name: Switch to the Sentinel overlay
+        run: |
+          docker compose down
+          docker compose -f compose.yaml -f compose.sentinel.yaml up -d --build --wait
+      - run: npm run test:failover
+
+      - name: Logs on failure
+        if: failure()
+        run: docker compose -f compose.yaml -f compose.sentinel.yaml logs --tail 100
+      - name: Tear down
+        if: always()
+        run: docker compose -f compose.yaml -f compose.sentinel.yaml down

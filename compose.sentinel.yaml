@@ -1,0 +1,66 @@
+# Failover overlay: primary + replica + 3 Sentinels; the app follows whichever Redis is primary.
+# Run:  docker compose -f compose.yaml -f compose.sentinel.yaml up -d --build
+# Test: npm run test:failover
+#
+# Redis nodes get fixed IPs: Docker drops a stopped container's name from DNS, and Sentinel
+# stalls on the failed lookups (TILT mode) and never fails over. Real servers keep their address.
+#
+# Everything is password-protected, like a real Sentinel setup. The default password is for this
+# local stack only; set REDIS_PASSWORD in the environment to override it.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+services:
+  redis:
+    # masterauth too: after a failover this node rejoins as a replica of the new primary.
+    command: redis-server --requirepass ${REDIS_PASSWORD:-local-demo-password} --masterauth ${REDIS_PASSWORD:-local-demo-password}
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:-local-demo-password}
+    networks:
+      default:
+        ipv4_address: 172.30.0.10
+
+  redis-replica:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: redis-server --replicaof 172.30.0.10 6379 --requirepass ${REDIS_PASSWORD:-local-demo-password} --masterauth ${REDIS_PASSWORD:-local-demo-password}
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:-local-demo-password}
+    networks:
+      default:
+        ipv4_address: 172.30.0.11
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  sentinel:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    deploy:
+      replicas: 3
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:-local-demo-password}
+    # Quorum 2 of 3: two Sentinels must agree the primary is down. Sentinel rewrites its config,
+    # so it is generated into a writable file at startup. sentinel-pass lets Sentinels talk to each other.
+    command: >
+      sh -c 'printf "port 26379\nrequirepass $$REDISCLI_AUTH\nsentinel sentinel-pass $$REDISCLI_AUTH\nsentinel monitor mymaster 172.30.0.10 6379 2\nsentinel auth-pass mymaster $$REDISCLI_AUTH\nsentinel down-after-milliseconds mymaster 2000\nsentinel failover-timeout mymaster 10000\n" > /tmp/sentinel.conf && exec redis-sentinel /tmp/sentinel.conf'
+    depends_on:
+      redis-replica:
+        condition: service_healthy
+
+  app:
+    environment:
+      REDIS_SENTINELS: sentinel:26379
+      REDIS_SENTINEL_NAME: mymaster
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-local-demo-password}
+    depends_on:
+      sentinel:
+        condition: service_started

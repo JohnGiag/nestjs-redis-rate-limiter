@@ -1,0 +1,33 @@
+# Rendered by the nginx image at startup: environment variables in this file are filled in
+# and the result replaces /etc/nginx/conf.d/default.conf.
+
+# X-Upstream (which replica answered) is a test aid: it reveals internal addresses.
+# It is sent only when EXPOSE_UPSTREAM=1; an empty value makes nginx omit the header.
+map "${EXPOSE_UPSTREAM}" $x_upstream {
+    default "";
+    "1"     $upstream_addr;
+}
+
+# "app" resolves to every replica's IP at startup; nginx round-robins between them.
+upstream app {
+    server app:3000;
+    # Reuse connections to the replicas instead of opening one per request.
+    keepalive 32;
+    # Below Node's 5 s keepAliveTimeout: nginx must drop an idle connection before Node does,
+    # or it can send a request on a socket Node is closing (a 502, not retried for POST).
+    keepalive_timeout 4s;
+}
+
+server {
+    listen 80;
+
+    location / {
+        proxy_pass http://app;
+        proxy_http_version 1.1;          # keep-alive needs HTTP/1.1
+        proxy_set_header Connection "";  # and no "Connection: close" from the client
+        proxy_set_header Host $host;
+        # Appends the real client IP; the app trusts exactly this one hop (TRUST_PROXY_HOPS=1).
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        add_header X-Upstream $x_upstream always;
+    }
+}
