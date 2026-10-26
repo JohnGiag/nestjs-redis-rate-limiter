@@ -1,5 +1,7 @@
 # NestJS Redis Sliding Window Rate Limiter
 
+[![CI](https://github.com/JohnGiag/nestjs-redis-rate-limiter/actions/workflows/ci.yml/badge.svg)](https://github.com/JohnGiag/nestjs-redis-rate-limiter/actions/workflows/ci.yml)
+
 A distributed rate limiter for NestJS that uses Redis. It enforces an exact **sliding window** limit across any number of stateless app instances. The check-and-record step runs as one atomic Lua script inside Redis, so concurrent requests cannot race past the limit.
 
 ```ts

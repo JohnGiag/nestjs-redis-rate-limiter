@@ -1,9 +1,12 @@
 name: CI
 
 on:
+  # Docs-only changes can't affect the tests, so they don't trigger a run.
   push:
     branches: [main]
+    paths-ignore: ['**.md', 'LICENSE']
   pull_request:
+    paths-ignore: ['**.md', 'LICENSE']
 
 jobs:
   test:
